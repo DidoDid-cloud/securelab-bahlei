@@ -27,15 +27,40 @@ submit/click у Client/app.js
   → textContent/createTextNode у Client/app.js
 ```
 
+## Реалізований маршрут: підсумок за severity (ЛР 1)
+
+```text
+клік по кнопці "Показати підсумок" у Client/index.html
+  -> loadSeveritySummary() у Client/app.js
+  -> GET /api/incidents/severity-summary[?status=]
+  -> Presentation/Endpoints/IncidentEndpoints.cs: GetSeveritySummaryAsync
+    (валідація status за allowlist IncidentStatus, 400 при некоректному значенні)
+  -> Application/Incidents/IncidentQueries.cs: GetSeveritySummaryAsync
+    (AsNoTracking -> GroupBy(Severity) -> Count() -> ToListAsync)
+  -> Data/SecureLabDbContext.cs: DbSet<Incident> Incidents, таблиця "incidents"
+  -> PostgreSQL: GROUP BY severity
+  -> доповнення відсутніх severity (політика "повний перелік рівнів", count: 0)
+  -> сортування за критичністю (Critical -> High -> Medium -> Low)
+  -> Presentation/Contracts/IncidentResponses.cs: IncidentSeveritySummaryResponse(Severity, Count)
+  -> JSON-масив
+  -> renderSeveritySummary() у Client/app.js -> textContent
+```
+
+**Політика нульових груп:** обрано *повний перелік рівнів* — після агрегації код доповнює severity, відсутні в таблиці, значенням `count: 0` (реалізація: `Enum.GetValues<IncidentSeverity>()` + `GetValueOrDefault` у `IncidentQueries.GetSeveritySummaryAsync`). На baseline seed дає 4 елементи: Critical (0), High (1), Medium (1), Low (1).
+
+**Порядок:** явний порядок критичності (не SQL/лексикографічний, оскільки `Severity` зберігається як `text` через `HasConversion<string>()`), реалізовано сортуванням за числовим значенням enum після матеріалізації агрегату в пам'яті.
+
 ## Межі довіри
 
 Доповніть таблицю щонайменше трьома конкретними спостереженнями.
 
 | Межа | Чому даним ще не можна довіряти | Де перевіряємо або обмежуємо |
 |---|---|---|
-| Користувач → Browser client | Користувач контролює введення | TODO |
-| Browser client → API | Клієнт і HTTP-запит можна змінити поза UI | TODO |
-| PostgreSQL → API → DOM | У БД може зберігатися раніше введений недовірений текст | DTO та безпечний DOM sink; доповнити |
+| Browser -> API | method, URL, path parameter `id`, query parameter `status` повністю контролює клієнт | маршрутне обмеження `:guid` на `/{id:guid}`; allowlist-валідація `status` через `Enum.TryParse`+`Enum.IsDefined`, 400 Validation Problem Details при некоректному значенні |
+| API -> PostgreSQL | збережений у БД текст не стає безпечним автоматично лише тому, що вже пройшов через систему раніше | EF Core параметризує LINQ-запити (захист від SQL-ін'єкції); `AsNoTracking()` явно позначає read-only сценарій |
+| API -> Browser | право прочитати сутність (entity) не означає право одержати всі її поля | явна проєкція в `IncidentQueries` (`Select` формує лише дозволені поля DTO); `IncidentDetailsResponse` не містить `OwnerUserId`, `email`, внутрішні коментарі (`IsInternal == true`) |
+| Дані response -> DOM | текстове значення з JSON, включно зі збереженим раніше користувацьким вводом, не можна інтерпретувати як HTML | `textContent`/`document.createTextNode` в `app.js` (у т.ч. `renderSeveritySummary`), а не `innerHTML`; підтверджено тестом `ClientScript_DoesNotUseDangerousInnerHtmlSink` |
+
 
 ## Конфігураційні входи
 
