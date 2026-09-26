@@ -12,20 +12,48 @@ public static class Lab02Endpoints
     {
         app.MapGet("/api/incidents/search", async (string? q, string? sortBy, SecureLabDbContext db, CancellationToken ct) =>
         {
-            var order = sortBy switch
+            if (sortBy is not (null or "" or "createdAtUtc" or "severity" or "status"))
             {
-                null or "" or "createdAtUtc" => "created_at_utc DESC",
-                "severity" => "severity", "status" => "status", _ => sortBy
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["sortBy"] = ["Допустимі значення: createdAtUtc, severity, status."]
+                });
+            }
+
+            // Літеральний substring-пошук: екрануємо саму escape-риску і обидва wildcard ILIKE (%, _).
+            var term = q ?? "";
+            var escaped = term.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+            var pattern = $"%{escaped}%";
+
+            var query = db.Incidents.AsNoTracking().Where(incident =>
+                EF.Functions.ILike(incident.Title, pattern, "\\") ||
+                EF.Functions.ILike(incident.Description, pattern, "\\"));
+
+            query = sortBy switch
+            {
+                "severity" => query.OrderByDescending(incident =>
+                    incident.Severity == IncidentSeverity.Critical ? 3
+                    : incident.Severity == IncidentSeverity.High ? 2
+                    : incident.Severity == IncidentSeverity.Medium ? 1
+                    : 0),
+                "status" => query.OrderBy(incident =>
+                    incident.Status == IncidentStatus.New ? 0
+                    : incident.Status == IncidentStatus.Triaged ? 1
+                    : incident.Status == IncidentStatus.InProgress ? 2
+                    : incident.Status == IncidentStatus.Resolved ? 3
+                    : 4),
+                _ => query.OrderByDescending(incident => incident.CreatedAtUtc)
             };
-            var sql = "SELECT * FROM incidents WHERE title ILIKE '%" + (q ?? "")
-                + "%' OR description ILIKE '%" + (q ?? "") + "%' ORDER BY " + order + " LIMIT 50";
-            var rows = await db.Incidents.FromSqlRaw(sql).AsNoTracking().ToListAsync(ct);
+
+            var rows = await query.Take(50).ToListAsync(ct);
+
             return Results.Ok(rows.Select(row => new
             {
                 row.Id, row.Title, row.Description,
                 Severity = row.Severity.ToString(), Status = row.Status.ToString(), row.CreatedAtUtc
             }));
         });
+        
         app.MapPost("/api/incidents", async (CreateIncidentRequest request, SecureLabDbContext db, CancellationToken ct) =>
         {
             var errors = new Dictionary<string, string[]>();
